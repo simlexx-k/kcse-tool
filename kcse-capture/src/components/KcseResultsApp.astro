@@ -1,0 +1,800 @@
+<section class="kcse-shell">
+  <header class="kcse-hero">
+    <div class="kcse-hero-text">
+      <p class="kcse-eyebrow">KCSE Results Capture</p>
+      <h2>Results Intake Console</h2>
+      <p class="kcse-muted">
+        Fetch parsed results for individual candidates or process a nominal roll
+        PDF in one batch. Connects directly to your FastAPI backend.
+      </p>
+      <div class="kcse-chip-row">
+        <span class="kcse-chip">Parsed endpoint</span>
+        <span class="kcse-chip">Batch PDF intake</span>
+        <span class="kcse-chip">Live KNEC lookup</span>
+      </div>
+    </div>
+    <div class="kcse-hero-card">
+      <div class="kcse-field">
+        <label for="api-base">API Base URL</label>
+        <input
+          id="api-base"
+          name="api-base"
+          type="url"
+          placeholder="http://127.0.0.1:8000"
+          value="http://127.0.0.1:8000"
+        />
+        <p class="kcse-hint">
+          Ensure the backend allows this origin in <code>KNEC_ALLOWED_ORIGINS</code>.
+        </p>
+      </div>
+      <div class="kcse-hero-notes">
+        <div class="kcse-note">
+          <span class="kcse-note-title">Backend</span>
+          <span class="kcse-muted">Run with <code>KNEC_VERIFY_SSL=false</code> if needed.</span>
+        </div>
+        <div class="kcse-note">
+          <span class="kcse-note-title">Batch Ready</span>
+          <span class="kcse-muted">Requires <code>python-multipart</code> and <code>pdftotext</code>.</span>
+        </div>
+      </div>
+      <div class="kcse-hero-actions">
+        <a class="kcse-link" href="/search/">Open Index Prefix Search</a>
+      </div>
+    </div>
+  </header>
+
+  <div class="kcse-grid">
+    <article class="kcse-card">
+      <header class="kcse-card-header">
+        <div>
+          <h3>Single Candidate</h3>
+          <p class="kcse-muted">Lookup results for one index number.</p>
+        </div>
+        <span class="kcse-badge">Parsed</span>
+      </header>
+      <form id="single-form" class="kcse-form">
+        <div class="kcse-field">
+          <label for="index-number">Index Number</label>
+          <input id="index-number" name="indexNumber" inputmode="numeric" required />
+        </div>
+        <div class="kcse-field">
+          <label for="candidate-name">Registered Name</label>
+          <input id="candidate-name" name="name" required />
+        </div>
+        <label class="kcse-checkbox">
+          <input type="checkbox" name="consent" checked />
+          I confirm I am authorized to access these results.
+        </label>
+        <button type="submit" class="kcse-button">Fetch Results</button>
+      </form>
+      <div id="single-status" class="kcse-status" aria-live="polite"></div>
+      <div id="single-result" class="kcse-output"></div>
+    </article>
+
+    <article class="kcse-card">
+      <header class="kcse-card-header">
+        <div>
+          <h3>Batch From Nominal Roll PDF</h3>
+          <p class="kcse-muted">Upload a PDF and process multiple candidates.</p>
+        </div>
+        <span class="kcse-badge kcse-badge-secondary">Batch</span>
+      </header>
+      <form id="batch-form" class="kcse-form">
+        <div class="kcse-field">
+          <label for="nominal-pdf">Nominal Roll PDF</label>
+          <input id="nominal-pdf" name="pdf" type="file" accept="application/pdf" required />
+        </div>
+        <div class="kcse-split">
+          <div class="kcse-field">
+            <label for="batch-limit">Limit (optional)</label>
+            <input id="batch-limit" name="limit" type="number" min="1" placeholder="e.g. 10" />
+          </div>
+          <div class="kcse-field">
+            <label for="batch-concurrency">Concurrency</label>
+            <input id="batch-concurrency" name="concurrency" type="number" min="1" max="10" value="3" />
+          </div>
+        </div>
+        <label class="kcse-checkbox">
+          <input type="checkbox" name="consent" checked />
+          I confirm I am authorized to access these results.
+        </label>
+        <button type="submit" class="kcse-button">Process Batch</button>
+      </form>
+      <div id="batch-status" class="kcse-status" aria-live="polite"></div>
+      <div id="batch-result" class="kcse-output"></div>
+    </article>
+
+  </div>
+</section>
+
+<script type="module">
+  const apiBaseInput = document.getElementById("api-base");
+  const singleForm = document.getElementById("single-form");
+  const singleStatus = document.getElementById("single-status");
+  const singleResult = document.getElementById("single-result");
+  const batchForm = document.getElementById("batch-form");
+  const batchStatus = document.getElementById("batch-status");
+  const batchResult = document.getElementById("batch-result");
+  const baseStorageKey = "kcse-api-base";
+  const batchStorageKey = "kcse-batch-results";
+
+  const create = (tag, className, text) => {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
+  };
+
+  const clearNode = (node) => {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  };
+
+  const renderPlaceholder = (node, message) => {
+    clearNode(node);
+    node.append(create("div", "kcse-placeholder", message));
+  };
+
+  const setStatus = (node, message, kind = "info") => {
+    node.textContent = message;
+    node.dataset.kind = kind;
+  };
+
+  const setLoading = (button, isLoading, label) => {
+    if (!button.dataset.label) {
+      button.dataset.label = button.textContent;
+    }
+    button.textContent = isLoading ? label : button.dataset.label;
+    button.disabled = isLoading;
+    button.setAttribute("aria-busy", isLoading ? "true" : "false");
+  };
+
+  const getBaseUrl = () => {
+    const raw = apiBaseInput.value.trim();
+    if (!raw) return "";
+    return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+  };
+
+  const ensureBaseUrl = () => {
+    const base = getBaseUrl();
+    if (!base) {
+      throw new Error("Set the API base URL first.");
+    }
+    return base;
+  };
+
+  const postJson = async (path, payload) => {
+    const response = await fetch(`${ensureBaseUrl()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = data && data.detail ? data.detail : `Request failed (${response.status})`;
+      throw new Error(detail);
+    }
+    return data;
+  };
+
+  const postForm = async (path, formData) => {
+    const response = await fetch(`${ensureBaseUrl()}${path}`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = data && data.detail ? data.detail : `Request failed (${response.status})`;
+      throw new Error(detail);
+    }
+    return data;
+  };
+
+  const saveBatchResults = (data) => {
+    try {
+      const payload = { savedAt: new Date().toISOString(), data };
+      localStorage.setItem(batchStorageKey, JSON.stringify(payload));
+    } catch (error) {
+      console.warn("Failed to store batch results.", error);
+    }
+  };
+
+  const renderJsonDetails = (node, data) => {
+    const details = document.createElement("details");
+    details.className = "kcse-json";
+    const summary = document.createElement("summary");
+    summary.textContent = "View JSON";
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(data, null, 2);
+    details.append(summary, pre);
+    node.append(details);
+  };
+
+  const renderSingleResult = (data) => {
+    clearNode(singleResult);
+    const candidate = data.candidate || {};
+    const header = create(
+      "div",
+      "kcse-result-header",
+      `${candidate.index_number || ""} ${candidate.name || ""}`.trim()
+    );
+    const subtitle = create(
+      "div",
+      "kcse-muted",
+      candidate.school ? candidate.school : "School not provided"
+    );
+    const grade = create("div", "kcse-mean", `Mean Grade: ${data.mean_grade || "N/A"}`);
+
+    singleResult.append(header, subtitle, grade);
+
+    const table = create("table", "kcse-table");
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Code", "Subject", "Grade"].forEach((label) => {
+      headRow.append(create("th", "", label));
+    });
+    thead.append(headRow);
+    table.append(thead);
+
+    const tbody = document.createElement("tbody");
+    (data.subjects || []).forEach((subject) => {
+      const row = document.createElement("tr");
+      row.append(
+        create("td", "", subject.code || ""),
+        create("td", "", subject.name || ""),
+        create("td", "", subject.grade || "")
+      );
+      tbody.append(row);
+    });
+    table.append(tbody);
+    singleResult.append(table);
+    renderJsonDetails(singleResult, data);
+  };
+
+  const renderBatchResult = (data) => {
+    clearNode(batchResult);
+    const counts = { ok: 0, not_found: 0, error: 0 };
+    (data.results || []).forEach((item) => {
+      if (counts[item.status] !== undefined) counts[item.status] += 1;
+    });
+    const summary = create("div", "kcse-summary");
+    summary.append(
+      create("span", "kcse-summary-text", `Processed ${data.processed} of ${data.total}.`)
+    );
+    const chips = create("div", "kcse-chip-row");
+    chips.append(
+      create("span", "kcse-chip kcse-chip-ok", `Ok ${counts.ok}`),
+      create("span", "kcse-chip kcse-chip-warn", `Not found ${counts.not_found}`),
+      create("span", "kcse-chip kcse-chip-error", `Errors ${counts.error}`)
+    );
+    summary.append(chips);
+    batchResult.append(summary);
+
+    const actions = create("div", "kcse-batch-actions");
+    const viewLink = create("a", "kcse-link", "Open full results view");
+    viewLink.href = "/batch-results/";
+    const savedNote = create(
+      "span",
+      "kcse-hint",
+      "Results saved locally for the full-page view."
+    );
+    actions.append(viewLink, savedNote);
+    batchResult.append(actions);
+
+    const table = create("table", "kcse-table");
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Index", "Name", "Status", "Mean Grade", "Notes"].forEach((label) => {
+      headRow.append(create("th", "", label));
+    });
+    thead.append(headRow);
+    table.append(thead);
+
+    const tbody = document.createElement("tbody");
+    (data.results || []).forEach((item) => {
+      const row = document.createElement("tr");
+      const mean =
+        item.status === "ok" && item.result ? item.result.mean_grade || "" : "";
+      const notes =
+        item.status === "error"
+          ? item.error || ""
+          : item.status === "not_found"
+            ? (item.alerts || []).join(" ")
+            : "";
+      const statusPill = create("span", `kcse-pill kcse-pill-${item.status}`, item.status);
+      row.append(
+        create("td", "", item.index_number || ""),
+        create("td", "", item.name || ""),
+        create("td", "", ""),
+        create("td", "", mean),
+        create("td", "", notes)
+      );
+      row.children[2].append(statusPill);
+      tbody.append(row);
+    });
+    table.append(tbody);
+    batchResult.append(table);
+    renderJsonDetails(batchResult, data);
+  };
+
+
+  const loadBaseUrl = () => {
+    const saved = localStorage.getItem(baseStorageKey);
+    if (saved) {
+      apiBaseInput.value = saved;
+    }
+  };
+
+  const saveBaseUrl = () => {
+    const base = getBaseUrl();
+    if (base) localStorage.setItem(baseStorageKey, base);
+  };
+
+  apiBaseInput.addEventListener("change", saveBaseUrl);
+  loadBaseUrl();
+
+  renderPlaceholder(singleResult, "Results will appear here.");
+  renderPlaceholder(batchResult, "Batch summary will appear here.");
+
+  singleForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    renderPlaceholder(singleResult, "Fetching results...");
+    const formData = new FormData(singleForm);
+    if (!formData.get("consent")) {
+      setStatus(singleStatus, "Consent is required to continue.", "error");
+      renderPlaceholder(singleResult, "Awaiting consent.");
+      return;
+    }
+    const button = singleForm.querySelector("button[type='submit']");
+    setLoading(button, true, "Fetching...");
+    setStatus(singleStatus, "Contacting KNEC...", "info");
+    const payload = {
+      indexNumber: formData.get("indexNumber"),
+      name: formData.get("name"),
+      consent: true,
+    };
+    try {
+      const data = await postJson("/kcse/results/parsed", payload);
+      setStatus(singleStatus, "Results loaded.", "success");
+      renderSingleResult(data);
+    } catch (error) {
+      setStatus(singleStatus, error.message, "error");
+      renderPlaceholder(singleResult, "No results to display.");
+    } finally {
+      setLoading(button, false, "");
+    }
+  });
+
+  batchForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    renderPlaceholder(batchResult, "Processing batch...");
+    const formData = new FormData(batchForm);
+    if (!formData.get("consent")) {
+      setStatus(batchStatus, "Consent is required to continue.", "error");
+      renderPlaceholder(batchResult, "Awaiting consent.");
+      return;
+    }
+    const file = formData.get("pdf");
+    if (!(file instanceof File)) {
+      setStatus(batchStatus, "Select a valid PDF file.", "error");
+      renderPlaceholder(batchResult, "Upload a nominal roll PDF.");
+      return;
+    }
+    const button = batchForm.querySelector("button[type='submit']");
+    setLoading(button, true, "Processing...");
+    setStatus(batchStatus, "Uploading PDF...", "info");
+    const payload = new FormData();
+    payload.append("pdf", file);
+    payload.append("consent", "true");
+    const limit = formData.get("limit");
+    if (limit) payload.append("limit", limit);
+    const concurrency = formData.get("concurrency");
+    if (concurrency) payload.append("concurrency", concurrency);
+
+    try {
+      const data = await postForm("/kcse/results/batch", payload);
+      setStatus(batchStatus, "Batch complete.", "success");
+      saveBatchResults(data);
+      renderBatchResult(data);
+    } catch (error) {
+      setStatus(batchStatus, error.message, "error");
+      renderPlaceholder(batchResult, "No batch results to display.");
+    } finally {
+      setLoading(button, false, "");
+    }
+  });
+
+</script>
+
+<style>
+  .kcse-shell {
+    --kcse-accent: #0f766e;
+    --kcse-accent-2: #f4b400;
+    --kcse-ink: #0f172a;
+    --kcse-muted: #475569;
+    --kcse-panel: #ffffff;
+    --kcse-border: rgba(15, 23, 42, 0.12);
+
+    display: grid;
+    gap: clamp(1.5rem, 2vw, 2rem);
+    padding: clamp(1.5rem, 2.5vw, 2.5rem);
+    border-radius: 28px;
+    background:
+      radial-gradient(65rem 35rem at -10% -20%, rgba(244, 180, 0, 0.22), transparent 60%),
+      radial-gradient(55rem 30rem at 110% 10%, rgba(15, 118, 110, 0.18), transparent 60%),
+      var(--sl-color-bg);
+    border: 1px solid var(--sl-color-gray-5);
+  }
+
+  .kcse-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 3vw, 2.5rem);
+  }
+
+  .kcse-hero-text h2 {
+    margin: 0.35rem 0 0.75rem;
+    font-size: clamp(1.8rem, 3vw, 2.4rem);
+  }
+
+  .kcse-eyebrow {
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    color: var(--kcse-muted);
+  }
+
+  .kcse-hero-card {
+    background: var(--kcse-panel);
+    border-radius: 20px;
+    border: 1px solid var(--kcse-border);
+    padding: 1.25rem;
+    display: grid;
+    gap: 1.25rem;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+  }
+
+  .kcse-hero-notes {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .kcse-hero-actions {
+    display: flex;
+    justify-content: flex-start;
+    margin-top: 0.25rem;
+  }
+
+  .kcse-note {
+    display: grid;
+    gap: 0.3rem;
+  }
+
+  .kcse-note-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+  }
+
+  .kcse-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .kcse-chip {
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.12);
+    color: var(--kcse-accent);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .kcse-chip-ok {
+    background: rgba(34, 197, 94, 0.16);
+    color: #166534;
+  }
+
+  .kcse-chip-warn {
+    background: rgba(234, 179, 8, 0.18);
+    color: #92400e;
+  }
+
+  .kcse-chip-error {
+    background: rgba(239, 68, 68, 0.16);
+    color: #991b1b;
+  }
+
+  .kcse-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5rem;
+  }
+
+  .kcse-card {
+    border: 1px solid var(--kcse-border);
+    border-radius: 20px;
+    padding: 1.5rem;
+    background: var(--kcse-panel);
+    color: var(--kcse-ink);
+    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+    display: grid;
+    gap: 1rem;
+    animation: kcse-rise 0.4s ease both;
+  }
+
+  .kcse-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .kcse-badge {
+    padding: 0.35rem 0.7rem;
+    border-radius: 999px;
+    background: rgba(244, 180, 0, 0.2);
+    color: #92400e;
+    font-weight: 600;
+    font-size: 0.8rem;
+  }
+
+  .kcse-badge-secondary {
+    background: rgba(15, 118, 110, 0.18);
+    color: var(--kcse-accent);
+  }
+
+  .kcse-form {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .kcse-field {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .kcse-field input {
+    padding: 0.7rem 0.75rem;
+    border-radius: 12px;
+    border: 1px solid var(--kcse-border);
+    background: #ffffff;
+    color: inherit;
+    font-size: 0.95rem;
+  }
+
+  .kcse-field input:focus {
+    outline: 2px solid rgba(15, 118, 110, 0.3);
+    border-color: var(--kcse-accent);
+  }
+
+  .kcse-split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+  }
+
+  .kcse-checkbox {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-size: 0.95rem;
+  }
+
+  .kcse-button {
+    padding: 0.8rem 1.2rem;
+    border-radius: 999px;
+    border: none;
+    background: linear-gradient(120deg, #f4b400, #f97316);
+    color: #1b1401;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 12px 20px rgba(249, 115, 22, 0.2);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .kcse-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 16px 26px rgba(249, 115, 22, 0.25);
+  }
+
+  .kcse-button:disabled {
+    cursor: wait;
+    opacity: 0.7;
+    transform: none;
+    box-shadow: none;
+  }
+
+  .kcse-status {
+    font-weight: 600;
+  }
+
+  .kcse-status[data-kind="error"] {
+    color: #b91c1c;
+  }
+
+  .kcse-status[data-kind="success"] {
+    color: #047857;
+  }
+
+  .kcse-output {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .kcse-placeholder {
+    padding: 0.9rem 1rem;
+    border-radius: 12px;
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--kcse-muted);
+    font-size: 0.95rem;
+  }
+
+  .kcse-result-header {
+    font-size: 1.05rem;
+    font-weight: 700;
+  }
+
+  .kcse-mean {
+    font-weight: 600;
+  }
+
+  .kcse-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #ffffff;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--kcse-border);
+  }
+
+  .kcse-table th,
+  .kcse-table td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    text-align: left;
+    font-size: 0.9rem;
+  }
+
+  .kcse-table th {
+    background: rgba(15, 23, 42, 0.04);
+    font-weight: 600;
+  }
+
+  .kcse-summary {
+    display: grid;
+    gap: 0.5rem;
+    font-weight: 600;
+  }
+
+  .kcse-summary-text {
+    font-size: 0.95rem;
+  }
+
+
+  .kcse-batch-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
+  .kcse-link {
+    color: var(--kcse-accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .kcse-link:hover {
+    text-decoration: underline;
+  }
+
+  .kcse-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+  }
+
+  .kcse-pill-ok {
+    background: rgba(34, 197, 94, 0.2);
+    color: #166534;
+  }
+
+  .kcse-pill-not_found {
+    background: rgba(234, 179, 8, 0.2);
+    color: #92400e;
+  }
+
+  .kcse-pill-error {
+    background: rgba(239, 68, 68, 0.2);
+    color: #991b1b;
+  }
+
+  .kcse-json {
+    border: 1px dashed var(--kcse-border);
+    border-radius: 12px;
+    padding: 0.75rem;
+  }
+
+  .kcse-json summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .kcse-json pre {
+    margin-top: 0.75rem;
+    background: rgba(15, 23, 42, 0.04);
+    padding: 0.75rem;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+  }
+
+  .kcse-hint {
+    font-size: 0.85rem;
+    color: var(--kcse-muted);
+  }
+
+  .kcse-muted {
+    color: var(--kcse-muted);
+  }
+
+  @keyframes kcse-rise {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .kcse-shell {
+      --kcse-ink: #e2e8f0;
+      --kcse-muted: #94a3b8;
+      --kcse-panel: #0f172a;
+      --kcse-border: rgba(148, 163, 184, 0.2);
+    }
+
+    .kcse-card,
+    .kcse-hero-card,
+    .kcse-table {
+      background: var(--kcse-panel);
+    }
+
+    .kcse-field input {
+      background: #0b1220;
+      color: var(--kcse-ink);
+    }
+
+    .kcse-placeholder {
+      background: rgba(148, 163, 184, 0.12);
+    }
+
+    .kcse-json pre {
+      background: rgba(148, 163, 184, 0.08);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .kcse-hero {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .kcse-shell {
+      padding: 1.25rem;
+    }
+
+    .kcse-card {
+      padding: 1.1rem;
+    }
+  }
+</style>

@@ -1,0 +1,35 @@
+# Test your FastAPI endpoints
+
+GET http://127.0.0.1:8000/
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8000/kcse/results/search
+Content-Type: application/json
+
+{
+  "baseIndex": "29540102",
+  "name": "nelda",
+  "consent": true,
+  "start": 1,
+  "end": 50,
+  "concurrency": 3
+}
+
+###
+GET http://127.0.0.1:8000/hello/User
+Accept: application/json
+
+###
+
+POST http://127.0.0.1:8000/kcse/results/parsed
+Content-Type: application/json
+
+{
+  "indexNumber": "29540204037",
+  "name": "nelda",
+  "consent": true
+}
+
+###

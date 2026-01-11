@@ -1,0 +1,560 @@
+<section class="kcse-search-shell">
+  <header class="kcse-search-hero">
+    <div class="kcse-hero-text">
+      <p class="kcse-eyebrow">Index Prefix Search</p>
+      <h2>Find Results by Prefix</h2>
+      <p class="kcse-muted">
+        Provide a base index prefix and a candidate name. The system appends
+        suffixes in the selected range and returns the matching result.
+      </p>
+      <div class="kcse-chip-row">
+        <span class="kcse-chip">Range scan</span>
+        <span class="kcse-chip">Name verification</span>
+        <span class="kcse-chip">Parsed results</span>
+      </div>
+    </div>
+    <div class="kcse-hero-card">
+      <div class="kcse-field">
+        <label for="api-base">API Base URL</label>
+        <input
+          id="api-base"
+          name="api-base"
+          type="url"
+          placeholder="http://127.0.0.1:8000"
+          value="http://127.0.0.1:8000"
+        />
+        <p class="kcse-hint">
+          Ensure the backend allows this origin in <code>KNEC_ALLOWED_ORIGINS</code>.
+        </p>
+      </div>
+      <div class="kcse-hero-actions">
+        <a class="kcse-link" href="/">Back to main capture</a>
+      </div>
+    </div>
+  </header>
+
+  <section class="kcse-card">
+    <header class="kcse-card-header">
+      <div>
+        <h3>Prefix Search</h3>
+        <p class="kcse-muted">
+          Use a narrow range to keep the search fast. Defaults to 1–50.
+        </p>
+      </div>
+      <span class="kcse-badge">Search</span>
+    </header>
+    <form id="search-form" class="kcse-form">
+      <div class="kcse-field">
+        <label for="base-index">Base Index Prefix</label>
+        <input
+          id="base-index"
+          name="baseIndex"
+          inputmode="numeric"
+          placeholder="e.g. 29540102"
+          required
+        />
+      </div>
+      <div class="kcse-field">
+        <label for="search-name">Registered Name</label>
+        <input id="search-name" name="name" required />
+      </div>
+      <div class="kcse-split">
+        <div class="kcse-field">
+          <label for="search-start">Suffix Start</label>
+          <input id="search-start" name="start" type="number" min="0" value="1" />
+        </div>
+        <div class="kcse-field">
+          <label for="search-end">Suffix End</label>
+          <input id="search-end" name="end" type="number" min="0" value="50" />
+        </div>
+        <div class="kcse-field">
+          <label for="search-concurrency">Concurrency</label>
+          <input
+            id="search-concurrency"
+            name="concurrency"
+            type="number"
+            min="1"
+            max="10"
+            value="3"
+          />
+        </div>
+      </div>
+      <label class="kcse-checkbox">
+        <input type="checkbox" name="consent" checked />
+        I confirm I am authorized to access these results.
+      </label>
+      <button type="submit" class="kcse-button">Search Prefix</button>
+    </form>
+    <div id="search-status" class="kcse-status" aria-live="polite"></div>
+    <div id="search-result" class="kcse-output"></div>
+  </section>
+</section>
+
+<script type="module">
+  const apiBaseInput = document.getElementById("api-base");
+  const searchForm = document.getElementById("search-form");
+  const searchStatus = document.getElementById("search-status");
+  const searchResult = document.getElementById("search-result");
+  const baseStorageKey = "kcse-api-base";
+
+  const create = (tag, className, text) => {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
+  };
+
+  const clearNode = (node) => {
+    while (node.firstChild) node.removeChild(node.firstChild);
+  };
+
+  const renderPlaceholder = (node, message) => {
+    clearNode(node);
+    node.append(create("div", "kcse-placeholder", message));
+  };
+
+  const setStatus = (node, message, kind = "info") => {
+    node.textContent = message;
+    node.dataset.kind = kind;
+  };
+
+  const setLoading = (button, isLoading, label) => {
+    if (!button.dataset.label) {
+      button.dataset.label = button.textContent;
+    }
+    button.textContent = isLoading ? label : button.dataset.label;
+    button.disabled = isLoading;
+    button.setAttribute("aria-busy", isLoading ? "true" : "false");
+  };
+
+  const getBaseUrl = () => {
+    const raw = apiBaseInput.value.trim();
+    if (!raw) return "";
+    return raw.endsWith("/") ? raw.slice(0, -1) : raw;
+  };
+
+  const ensureBaseUrl = () => {
+    const base = getBaseUrl();
+    if (!base) {
+      throw new Error("Set the API base URL first.");
+    }
+    return base;
+  };
+
+  const postJson = async (path, payload) => {
+    const response = await fetch(`${ensureBaseUrl()}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = data && data.detail ? data.detail : `Request failed (${response.status})`;
+      throw new Error(detail);
+    }
+    return data;
+  };
+
+  const formatSubjects = (subjects) => {
+    if (!subjects || !subjects.length) return "";
+    return subjects
+      .map((subject) => `${subject.name || ""} ${subject.grade || ""}`.trim())
+      .filter(Boolean)
+      .join(" | ");
+  };
+
+  const renderSearchResult = (data) => {
+    clearNode(searchResult);
+    const summary = create("div", "kcse-summary");
+    summary.append(
+      create(
+        "span",
+        "kcse-summary-text",
+        `Searched ${data.searched || 0}. Found ${data.found || 0}.`
+      )
+    );
+    const chips = create("div", "kcse-chip-row");
+    const notFound = data.summary?.not_found ?? 0;
+    const mismatched = data.summary?.name_mismatch ?? 0;
+    const errors = data.summary?.errors ?? 0;
+    chips.append(
+      create("span", "kcse-chip kcse-chip-ok", `Matched ${data.found || 0}`),
+      create("span", "kcse-chip kcse-chip-warn", `Not found ${notFound}`),
+      create("span", "kcse-chip kcse-chip-error", `Errors ${errors}`),
+      create("span", "kcse-chip", `Name mismatch ${mismatched}`)
+    );
+    summary.append(chips);
+    searchResult.append(summary);
+
+    if (!data.results || !data.results.length) {
+      searchResult.append(create("div", "kcse-placeholder", "No matching results found."));
+      return;
+    }
+
+    const table = create("table", "kcse-table");
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Index", "Name", "School", "Mean Grade", "Subjects"].forEach((label) => {
+      headRow.append(create("th", "", label));
+    });
+    thead.append(headRow);
+    table.append(thead);
+
+    const tbody = document.createElement("tbody");
+    data.results.forEach((item) => {
+      const candidate = item.result?.candidate || {};
+      const subjects = formatSubjects(item.result?.subjects || []);
+      const row = document.createElement("tr");
+      const subjectsCell = create("td", "kcse-subjects", subjects);
+      subjectsCell.title = subjects;
+      row.append(
+        create("td", "", item.index_number || candidate.index_number || ""),
+        create("td", "", candidate.name || ""),
+        create("td", "", candidate.school || ""),
+        create("td", "", item.result?.mean_grade || ""),
+        subjectsCell
+      );
+      tbody.append(row);
+    });
+    table.append(tbody);
+    searchResult.append(table);
+
+    if (data.errors && data.errors.length) {
+      const errorsWrap = create("div", "kcse-output");
+      errorsWrap.append(create("div", "kcse-summary-text", "Errors"));
+      const list = document.createElement("ul");
+      list.className = "kcse-error-list";
+      data.errors.forEach((item) => {
+        const message = `${item.index_number || ""}: ${item.error || "Error"}`;
+        const li = document.createElement("li");
+        li.textContent = message;
+        list.append(li);
+      });
+      errorsWrap.append(list);
+      searchResult.append(errorsWrap);
+    }
+  };
+
+  const loadBaseUrl = () => {
+    const saved = localStorage.getItem(baseStorageKey);
+    if (saved) {
+      apiBaseInput.value = saved;
+    }
+  };
+
+  const saveBaseUrl = () => {
+    const base = getBaseUrl();
+    if (base) localStorage.setItem(baseStorageKey, base);
+  };
+
+  apiBaseInput.addEventListener("change", saveBaseUrl);
+  loadBaseUrl();
+
+  renderPlaceholder(searchResult, "Search results will appear here.");
+
+  searchForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    renderPlaceholder(searchResult, "Searching...");
+    const formData = new FormData(searchForm);
+    if (!formData.get("consent")) {
+      setStatus(searchStatus, "Consent is required to continue.", "error");
+      renderPlaceholder(searchResult, "Awaiting consent.");
+      return;
+    }
+    const button = searchForm.querySelector("button[type='submit']");
+    setLoading(button, true, "Searching...");
+    setStatus(searchStatus, "Scanning index range...", "info");
+    const payload = {
+      baseIndex: formData.get("baseIndex"),
+      name: formData.get("name"),
+      consent: true,
+    };
+    const start = formData.get("start");
+    const end = formData.get("end");
+    const concurrency = formData.get("concurrency");
+    if (start) payload.start = Number(start);
+    if (end) payload.end = Number(end);
+    if (concurrency) payload.concurrency = Number(concurrency);
+
+    try {
+      const data = await postJson("/kcse/results/search", payload);
+      setStatus(searchStatus, "Search complete.", "success");
+      renderSearchResult(data);
+    } catch (error) {
+      setStatus(searchStatus, error.message, "error");
+      renderPlaceholder(searchResult, "No search results to display.");
+    } finally {
+      setLoading(button, false, "");
+    }
+  });
+</script>
+
+<style>
+  .kcse-search-shell {
+    --kcse-accent: #0f766e;
+    --kcse-accent-2: #f4b400;
+    --kcse-ink: #0f172a;
+    --kcse-muted: #475569;
+    --kcse-panel: #ffffff;
+    --kcse-border: rgba(15, 23, 42, 0.12);
+
+    display: grid;
+    gap: clamp(1.5rem, 2vw, 2rem);
+    padding: clamp(1.5rem, 2.5vw, 2.5rem);
+    border-radius: 28px;
+    background:
+      radial-gradient(55rem 35rem at -10% -20%, rgba(244, 180, 0, 0.22), transparent 60%),
+      radial-gradient(45rem 30rem at 110% 10%, rgba(15, 118, 110, 0.18), transparent 60%),
+      var(--sl-color-bg);
+    border: 1px solid var(--sl-color-gray-5);
+  }
+
+  .kcse-search-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: clamp(1.5rem, 3vw, 2.5rem);
+  }
+
+  .kcse-hero-text h2 {
+    margin: 0.35rem 0 0.75rem;
+    font-size: clamp(1.8rem, 3vw, 2.4rem);
+  }
+
+  .kcse-eyebrow {
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    color: var(--kcse-muted);
+  }
+
+  .kcse-hero-card {
+    background: var(--kcse-panel);
+    border-radius: 20px;
+    border: 1px solid var(--kcse-border);
+    padding: 1.25rem;
+    display: grid;
+    gap: 1rem;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.08);
+  }
+
+  .kcse-hero-actions {
+    display: flex;
+  }
+
+  .kcse-card {
+    border: 1px solid var(--kcse-border);
+    border-radius: 20px;
+    padding: 1.5rem;
+    background: var(--kcse-panel);
+    color: var(--kcse-ink);
+    box-shadow: 0 16px 30px rgba(15, 23, 42, 0.08);
+    display: grid;
+    gap: 1rem;
+  }
+
+  .kcse-card-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+  }
+
+  .kcse-badge {
+    padding: 0.35rem 0.7rem;
+    border-radius: 999px;
+    background: rgba(244, 180, 0, 0.2);
+    color: #92400e;
+    font-weight: 600;
+    font-size: 0.8rem;
+  }
+
+  .kcse-form {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .kcse-field {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .kcse-field input {
+    padding: 0.7rem 0.75rem;
+    border-radius: 12px;
+    border: 1px solid var(--kcse-border);
+    background: #ffffff;
+    color: inherit;
+    font-size: 0.95rem;
+  }
+
+  .kcse-field input:focus {
+    outline: 2px solid rgba(15, 118, 110, 0.3);
+    border-color: var(--kcse-accent);
+  }
+
+  .kcse-split {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.75rem;
+  }
+
+  .kcse-checkbox {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    font-size: 0.95rem;
+  }
+
+  .kcse-button {
+    padding: 0.8rem 1.2rem;
+    border-radius: 999px;
+    border: none;
+    background: linear-gradient(120deg, #f4b400, #f97316);
+    color: #1b1401;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 12px 20px rgba(249, 115, 22, 0.2);
+  }
+
+  .kcse-button:disabled {
+    cursor: wait;
+    opacity: 0.7;
+  }
+
+  .kcse-status {
+    font-weight: 600;
+  }
+
+  .kcse-status[data-kind="error"] {
+    color: #b91c1c;
+  }
+
+  .kcse-status[data-kind="success"] {
+    color: #047857;
+  }
+
+  .kcse-output {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .kcse-placeholder {
+    padding: 0.9rem 1rem;
+    border-radius: 12px;
+    background: rgba(148, 163, 184, 0.15);
+    color: var(--kcse-muted);
+    font-size: 0.95rem;
+  }
+
+  .kcse-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #ffffff;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--kcse-border);
+  }
+
+  .kcse-table th,
+  .kcse-table td {
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    text-align: left;
+    font-size: 0.9rem;
+  }
+
+  .kcse-table th {
+    background: rgba(15, 23, 42, 0.04);
+    font-weight: 600;
+  }
+
+  .kcse-summary {
+    display: grid;
+    gap: 0.5rem;
+    font-weight: 600;
+  }
+
+  .kcse-summary-text {
+    font-size: 0.95rem;
+  }
+
+  .kcse-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .kcse-chip {
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.12);
+    color: var(--kcse-accent);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .kcse-chip-ok {
+    background: rgba(34, 197, 94, 0.16);
+    color: #166534;
+  }
+
+  .kcse-chip-warn {
+    background: rgba(234, 179, 8, 0.18);
+    color: #92400e;
+  }
+
+  .kcse-chip-error {
+    background: rgba(239, 68, 68, 0.16);
+    color: #991b1b;
+  }
+
+  .kcse-subjects {
+    font-size: 0.82rem;
+    color: var(--kcse-muted);
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  .kcse-error-list {
+    margin: 0;
+    padding-left: 1.2rem;
+    color: var(--kcse-muted);
+    font-size: 0.9rem;
+  }
+
+  .kcse-hint {
+    font-size: 0.85rem;
+    color: var(--kcse-muted);
+  }
+
+  .kcse-link {
+    color: var(--kcse-accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .kcse-link:hover {
+    text-decoration: underline;
+  }
+
+  .kcse-muted {
+    color: var(--kcse-muted);
+  }
+
+  @media (max-width: 900px) {
+    .kcse-search-hero {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .kcse-search-shell {
+      padding: 1.25rem;
+    }
+
+    .kcse-card {
+      padding: 1.1rem;
+    }
+  }
+</style>

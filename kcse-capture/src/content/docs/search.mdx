@@ -1,0 +1,23 @@
+---
+title: Index Prefix Search
+description: Scan an index prefix range to find matching KCSE results.
+template: splash
+---
+
+import KcseSearchView from '../../components/KcseSearchView.astro';
+
+<div class="kcse-full-bleed">
+  <KcseSearchView />
+</div>
+
+<style is:global>{`
+  .kcse-full-bleed {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
+  }
+
+  .kcse-full-bleed > * {
+    max-width: 100%;
+  }
+`}</style>

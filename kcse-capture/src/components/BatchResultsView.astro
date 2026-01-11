@@ -1,0 +1,1049 @@
+<section class="kcse-batch-page">
+  <header class="kcse-batch-header">
+    <div>
+      <p class="kcse-eyebrow">Batch Results</p>
+      <h1>Nominal Roll Intake</h1>
+      <p class="kcse-muted">
+        Review processed KCSE results, filter by status, and drill into individual
+        candidates. Data is loaded from the latest batch run saved locally.
+      </p>
+    </div>
+    <div class="kcse-header-actions">
+      <a class="kcse-link" href="/">Back to capture</a>
+      <button id="download-csv" class="kcse-button kcse-button-ghost" type="button">
+        Download CSV
+      </button>
+      <button id="download-pdf" class="kcse-button kcse-button-ghost" type="button">
+        Export PDF
+      </button>
+      <button id="clear-results" class="kcse-button kcse-button-ghost" type="button">
+        Clear Saved
+      </button>
+    </div>
+  </header>
+
+  <section id="batch-meta" class="kcse-batch-meta"></section>
+
+  <section class="kcse-batch-controls">
+    <div class="kcse-field">
+      <label for="search-input">Search</label>
+      <input id="search-input" placeholder="Search index or name" />
+    </div>
+    <div class="kcse-field">
+      <label for="status-filter">Status</label>
+      <select id="status-filter">
+        <option value="all">All statuses</option>
+        <option value="ok">Ok</option>
+        <option value="not_found">Not found</option>
+        <option value="error">Error</option>
+      </select>
+    </div>
+  </section>
+
+  <div id="empty-state" class="kcse-empty">
+    <h2>No batch results found.</h2>
+    <p class="kcse-muted">
+      Run a batch capture from the main KCSE capture page to populate this view.
+    </p>
+    <a class="kcse-button" href="/">Return to capture</a>
+  </div>
+
+  <div id="results-layout" class="kcse-batch-layout" hidden>
+    <div class="kcse-batch-table">
+      <div id="batch-summary" class="kcse-summary"></div>
+      <div class="kcse-table-wrap">
+        <table class="kcse-table">
+          <thead>
+            <tr>
+              <th>Index</th>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Mean Grade</th>
+              <th>Subjects</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="batch-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="kcse-modal" class="kcse-modal" aria-hidden="true">
+    <div class="kcse-modal-card" role="dialog" aria-modal="true" aria-label="Candidate details">
+      <header class="kcse-modal-header">
+        <h2>Candidate Details</h2>
+        <button id="kcse-modal-close" class="kcse-modal-close" type="button" aria-label="Close">
+          x
+        </button>
+      </header>
+      <div id="kcse-modal-body" class="kcse-modal-body"></div>
+    </div>
+  </div>
+</section>
+
+<script type="module">
+  const storageKey = "kcse-batch-results";
+  const summaryNode = document.getElementById("batch-summary");
+  const tableBody = document.getElementById("batch-table-body");
+  const modal = document.getElementById("kcse-modal");
+  const modalBody = document.getElementById("kcse-modal-body");
+  const modalClose = document.getElementById("kcse-modal-close");
+  const emptyState = document.getElementById("empty-state");
+  const layout = document.getElementById("results-layout");
+  const searchInput = document.getElementById("search-input");
+  const statusFilter = document.getElementById("status-filter");
+  const downloadBtn = document.getElementById("download-csv");
+  const pdfBtn = document.getElementById("download-pdf");
+  const clearBtn = document.getElementById("clear-results");
+  const metaNode = document.getElementById("batch-meta");
+
+  const create = (tag, className, text) => {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text) el.textContent = text;
+    return el;
+  };
+
+  const escapeCsv = (value) => {
+    const text = `${value ?? ""}`;
+    if (text.includes('"') || text.includes(",") || text.includes("\n")) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+    return text;
+  };
+
+  const escapeHtml = (value) => {
+    return `${value ?? ""}`
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  };
+
+  const normalizeData = (raw) => {
+    if (!raw) return { data: null, savedAt: null };
+    if (raw.data && raw.results === undefined) {
+      return { data: raw.data, savedAt: raw.savedAt || null };
+    }
+    return { data: raw, savedAt: null };
+  };
+
+  const loadStoredResults = () => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return { data: null, savedAt: null };
+      return normalizeData(JSON.parse(raw));
+    } catch (error) {
+      console.warn("Failed to parse stored batch results.", error);
+      return { data: null, savedAt: null };
+    }
+  };
+
+  const state = {
+    data: null,
+    savedAt: null,
+    filtered: [],
+    selectedIndex: null,
+  };
+
+  const gradeOrder = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "E"];
+  const gradeRank = gradeOrder.reduce((acc, grade, index) => {
+    acc[grade] = index;
+    return acc;
+  }, {});
+
+  const parseMeanGrade = (meanGrade) => {
+    if (!meanGrade) return null;
+    const match = `${meanGrade}`.trim().match(/^([A-E][+-]?)/);
+    return match ? match[1] : null;
+  };
+
+  const countStatuses = (results) => {
+    const counts = { ok: 0, not_found: 0, error: 0 };
+    results.forEach((item) => {
+      if (counts[item.status] !== undefined) counts[item.status] += 1;
+    });
+    return { ...counts, total: results.length };
+  };
+
+  const buildGradeStats = (results) => {
+    const counts = {};
+    let total = 0;
+    let cplusOrAbove = 0;
+    results.forEach((item) => {
+      if (item.status !== "ok") return;
+      const grade = parseMeanGrade(item.result?.mean_grade || "");
+      if (!grade) return;
+      counts[grade] = (counts[grade] || 0) + 1;
+      total += 1;
+      if (gradeRank[grade] <= gradeRank["C+"]) {
+        cplusOrAbove += 1;
+      }
+    });
+    return { counts, total, cplusOrAbove };
+  };
+
+  const formatPercent = (value, total) => {
+    if (!total) return "0.0";
+    return ((value / total) * 100).toFixed(1);
+  };
+
+  const buildSubjectList = (item, separator = " | ") => {
+    const subjects = item.result?.subjects || [];
+    return subjects
+      .map((subject) => `${subject.name || ""} ${subject.grade || ""}`.trim())
+      .filter(Boolean)
+      .join(separator);
+  };
+
+  const getSubjectColumns = (results) => {
+    const subjects = new Map();
+    results.forEach((item) => {
+      if (item.status !== "ok") return;
+      (item.result?.subjects || []).forEach((subject) => {
+        const code = `${subject.code || ""}`.trim();
+        const name = `${subject.name || ""}`.trim();
+        const key = code ? `code:${code}` : `name:${name}`;
+        const label = code && name ? `${code} ${name}` : name || code;
+        if (!label || subjects.has(key)) return;
+        subjects.set(key, { key, label, code });
+      });
+    });
+    return Array.from(subjects.values()).sort((a, b) => {
+      const aCode = parseInt(a.code, 10);
+      const bCode = parseInt(b.code, 10);
+      if (!Number.isNaN(aCode) && !Number.isNaN(bCode)) return aCode - bCode;
+      if (!Number.isNaN(aCode)) return -1;
+      if (!Number.isNaN(bCode)) return 1;
+      return a.label.localeCompare(b.label);
+    });
+  };
+
+  const getFilteredResults = () => {
+    if (!state.data) return [];
+    const term = searchInput.value.trim().toLowerCase();
+    const status = statusFilter.value;
+    return (state.data.results || []).filter((item) => {
+      const name = `${item.name || ""}`.toLowerCase();
+      const index = `${item.index_number || ""}`.toLowerCase();
+      const matchesTerm = !term || name.includes(term) || index.includes(term);
+      const matchesStatus = status === "all" || item.status === status;
+      return matchesTerm && matchesStatus;
+    });
+  };
+
+  const renderSummary = (results) => {
+    summaryNode.innerHTML = "";
+    const filteredCounts = countStatuses(results);
+    const overallCounts = countStatuses(state.data.results || []);
+    const gradeStats = buildGradeStats(results);
+    const summaryText = create(
+      "div",
+      "kcse-summary-text",
+      `Showing ${results.length} of ${state.data.results.length} results.`
+    );
+    const totalsText = create(
+      "div",
+      "kcse-summary-text",
+      `Processed ${state.data.processed} of ${state.data.total} students. Stored results: ${state.data.results.length}.`
+    );
+    const chips = create("div", "kcse-chip-row");
+    chips.append(
+      create("span", "kcse-chip kcse-chip-ok", `Ok ${filteredCounts.ok}`),
+      create("span", "kcse-chip kcse-chip-warn", `Not found ${filteredCounts.not_found}`),
+      create("span", "kcse-chip kcse-chip-error", `Errors ${filteredCounts.error}`)
+    );
+    const overallChips = create("div", "kcse-chip-row");
+    overallChips.append(
+      create("span", "kcse-chip kcse-chip-ok", `Total ok ${overallCounts.ok}`),
+      create("span", "kcse-chip kcse-chip-warn", `Total not found ${overallCounts.not_found}`),
+      create("span", "kcse-chip kcse-chip-error", `Total errors ${overallCounts.error}`)
+    );
+    const chipsBlock = create("div", "kcse-summary-block");
+    chipsBlock.append(create("div", "kcse-summary-title", "Filtered counts"), chips);
+    const overallBlock = create("div", "kcse-summary-block");
+    overallBlock.append(create("div", "kcse-summary-title", "Overall counts"), overallChips);
+    const hint = create("div", "kcse-hint", "Tip: click a row to open details.");
+    const gradeWrap = create("div", "kcse-grade-summary");
+    const gradeTitle = create("div", "kcse-summary-title", "Mean grade distribution");
+    const gradeGrid = create("div", "kcse-grade-grid");
+    gradeOrder.forEach((grade) => {
+      const count = gradeStats.counts[grade];
+      if (!count) return;
+      const pill = create("div", "kcse-grade-pill");
+      pill.append(create("span", "kcse-grade-label", grade));
+      pill.append(create("span", "kcse-grade-count", `${count}`));
+      gradeGrid.append(pill);
+    });
+    if (!gradeGrid.children.length) {
+      gradeGrid.append(create("div", "kcse-muted", "No mean grades available."));
+    }
+    const percentText = create(
+      "div",
+      "kcse-hint",
+      `C+ and above: ${gradeStats.cplusOrAbove} of ${gradeStats.total} (${formatPercent(
+        gradeStats.cplusOrAbove,
+        gradeStats.total
+      )}%).`
+    );
+    gradeWrap.append(gradeTitle, gradeGrid, percentText);
+    const summaryRow = create("div", "kcse-summary-row");
+    summaryRow.append(chipsBlock, overallBlock);
+    summaryNode.append(summaryText, totalsText, summaryRow, hint, gradeWrap);
+  };
+
+  const renderDetail = (container, item) => {
+    container.innerHTML = "";
+    if (!item) {
+      container.append(create("div", "kcse-placeholder", "Select a candidate to view details."));
+      return;
+    }
+
+    const header = create(
+      "div",
+      "kcse-detail-title",
+      `${item.index_number || ""} ${item.name || ""}`.trim()
+    );
+    container.append(header);
+    container.append(create("div", "kcse-muted", `Status: ${item.status || "unknown"}`));
+
+    if (item.status === "ok" && item.result) {
+      const mean = create(
+        "div",
+        "kcse-mean",
+        `Mean Grade: ${item.result.mean_grade || "N/A"}`
+      );
+      container.append(mean);
+
+      const subjectTable = create("table", "kcse-table kcse-table-compact");
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      ["Code", "Subject", "Grade"].forEach((label) => {
+        headRow.append(create("th", "", label));
+      });
+      thead.append(headRow);
+      subjectTable.append(thead);
+      const tbody = document.createElement("tbody");
+      (item.result.subjects || []).forEach((subject) => {
+        const row = document.createElement("tr");
+        row.append(
+          create("td", "", subject.code || ""),
+          create("td", "", subject.name || ""),
+          create("td", "", subject.grade || "")
+        );
+        tbody.append(row);
+      });
+      subjectTable.append(tbody);
+      container.append(subjectTable);
+    } else if (item.status === "not_found") {
+      const notes = (item.alerts || []).join(" ") || "No results found.";
+      container.append(create("div", "kcse-placeholder", notes));
+    } else if (item.status === "error") {
+      container.append(create("div", "kcse-placeholder", item.error || "Request failed."));
+    }
+
+    const details = document.createElement("details");
+    details.className = "kcse-json";
+    const summary = document.createElement("summary");
+    summary.textContent = "View JSON";
+    const pre = document.createElement("pre");
+    pre.textContent = JSON.stringify(item, null, 2);
+    details.append(summary, pre);
+    container.append(details);
+  };
+
+  const openModal = (item) => {
+    renderDetail(modalBody, item);
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+    document.body.classList.add("kcse-modal-open");
+  };
+
+  const closeModal = () => {
+    modal.classList.remove("is-open");
+    modal.setAttribute("aria-hidden", "true");
+    document.body.classList.remove("kcse-modal-open");
+  };
+
+  const renderTable = (results) => {
+    tableBody.innerHTML = "";
+    results.forEach((item, index) => {
+      const row = document.createElement("tr");
+      row.dataset.index = `${index}`;
+      row.tabIndex = 0;
+      const subjectList = buildSubjectList(item);
+      const subjectsCell = create("td", "kcse-subjects", subjectList);
+      subjectsCell.title = subjectList;
+      row.append(
+        create("td", "", item.index_number || ""),
+        create("td", "", item.name || ""),
+        create("td", "", ""),
+        create("td", "", item.result?.mean_grade || ""),
+        subjectsCell,
+        create(
+          "td",
+          "",
+          item.status === "error"
+            ? item.error || ""
+            : item.status === "not_found"
+              ? (item.alerts || []).join(" ")
+              : ""
+        )
+      );
+      const statusPill = create("span", `kcse-pill kcse-pill-${item.status}`, item.status);
+      row.children[2].append(statusPill);
+      row.addEventListener("click", () => {
+        state.selectedIndex = index;
+        openModal(item);
+      });
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          state.selectedIndex = index;
+          openModal(item);
+        }
+      });
+      tableBody.append(row);
+    });
+  };
+
+  const refresh = () => {
+    const filtered = getFilteredResults();
+    state.filtered = filtered;
+    state.selectedIndex = null;
+    renderSummary(filtered);
+    renderTable(filtered);
+    closeModal();
+  };
+
+  const updateMeta = () => {
+    metaNode.innerHTML = "";
+    if (!state.savedAt) return;
+    const formatted = new Date(state.savedAt).toLocaleString();
+    metaNode.append(
+      create("div", "kcse-meta-card", `Last saved: ${formatted}`)
+    );
+  };
+
+  const downloadCsv = () => {
+    if (!state.filtered.length) return;
+    const rows = [
+      ["Index", "Name", "Status", "Mean Grade", "Subjects", "Notes"].map(escapeCsv).join(","),
+    ];
+    state.filtered.forEach((item) => {
+      rows.push(
+        [
+          item.index_number,
+          item.name,
+          item.status,
+          item.result?.mean_grade || "",
+          buildSubjectList(item, "; "),
+          item.status === "error"
+            ? item.error || ""
+            : item.status === "not_found"
+              ? (item.alerts || []).join(" ")
+              : "",
+        ]
+          .map(escapeCsv)
+          .join(",")
+      );
+    });
+    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "kcse-batch-results.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const clearResults = () => {
+    localStorage.removeItem(storageKey);
+    state.data = null;
+    state.filtered = [];
+    layout.hidden = true;
+    emptyState.hidden = false;
+    metaNode.innerHTML = "";
+    downloadBtn.disabled = true;
+    pdfBtn.disabled = true;
+    clearBtn.disabled = true;
+    closeModal();
+  };
+
+  const downloadPdf = () => {
+    if (!state.filtered.length || !state.data) return;
+    const filteredCounts = countStatuses(state.filtered);
+    const overallCounts = countStatuses(state.data.results || []);
+    const gradeStats = buildGradeStats(state.filtered);
+    const subjectColumns = getSubjectColumns(state.filtered);
+    const subjectHeaderCells = subjectColumns
+      .map((column) => `<th class="subject">${escapeHtml(column.label)}</th>`)
+      .join("");
+    const gradeRows = gradeOrder
+      .map((grade) => {
+        const count = gradeStats.counts[grade];
+        if (!count) return "";
+        return `<div>${grade}: ${count}</div>`;
+      })
+      .filter(Boolean)
+      .join("");
+    const summary = `
+      <div class="summary">
+        <div><strong>Processed:</strong> ${state.data.processed} of ${state.data.total}</div>
+        <div><strong>Shown:</strong> ${state.filtered.length}</div>
+        <div><strong>Filtered ok:</strong> ${filteredCounts.ok}</div>
+        <div><strong>Filtered not found:</strong> ${filteredCounts.not_found}</div>
+        <div><strong>Filtered errors:</strong> ${filteredCounts.error}</div>
+        <div><strong>Overall ok:</strong> ${overallCounts.ok}</div>
+        <div><strong>Overall not found:</strong> ${overallCounts.not_found}</div>
+        <div><strong>Overall errors:</strong> ${overallCounts.error}</div>
+        <div><strong>C+ and above:</strong> ${gradeStats.cplusOrAbove} of ${
+      gradeStats.total
+    } (${formatPercent(gradeStats.cplusOrAbove, gradeStats.total)}%)</div>
+        <div><strong>Subjects:</strong> ${subjectColumns.length}</div>
+      </div>
+      <div class="grade-summary">
+        <strong>Mean grade distribution</strong>
+        <div class="grade-grid">
+          ${gradeRows || "<div>No mean grades available.</div>"}
+        </div>
+      </div>
+    `;
+    const rows = state.filtered
+      .map((item) => {
+        const gradeByKey = new Map();
+        (item.result?.subjects || []).forEach((subject) => {
+          const code = `${subject.code || ""}`.trim();
+          const name = `${subject.name || ""}`.trim();
+          const key = code ? `code:${code}` : `name:${name}`;
+          if (!key) return;
+          gradeByKey.set(key, subject.grade || "");
+        });
+        const notes =
+          item.status === "error"
+            ? item.error || ""
+            : item.status === "not_found"
+              ? (item.alerts || []).join(" ")
+              : "";
+        const subjectCells = subjectColumns
+          .map((column) => `<td class="subject">${escapeHtml(gradeByKey.get(column.key) || "")}</td>`)
+          .join("");
+        return `
+          <tr>
+            <td>${escapeHtml(item.index_number || "")}</td>
+            <td>${escapeHtml(item.name || "")}</td>
+            <td>${escapeHtml(item.status || "")}</td>
+            <td>${escapeHtml(item.result?.mean_grade || "")}</td>
+            ${subjectCells}
+            <td>${escapeHtml(notes)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    const html = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>KCSE Batch Results</title>
+          <style>
+            @page { size: A4 landscape; margin: 18mm; }
+            body { font-family: "Georgia", "Times New Roman", serif; margin: 0; color: #111827; }
+            .page { padding: 24px; }
+            h1 { margin-bottom: 4px; }
+            .meta { color: #4b5563; margin-bottom: 16px; }
+            .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
+            .grade-summary { margin-bottom: 16px; }
+            .grade-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; margin-top: 6px; }
+            table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+            th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; font-size: 11px; vertical-align: top; word-break: break-word; }
+            th { background: #f3f4f6; font-size: 11px; }
+            tbody tr:nth-child(even) { background: #f9fafb; }
+            th.subject, td.subject { text-align: center; font-size: 10px; }
+            .table-wrap { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+          </style>
+        </head>
+        <body>
+          <div class="page">
+            <h1>KCSE Batch Results</h1>
+            <div class="meta">Exported ${new Date().toLocaleString()}</div>
+            ${summary}
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Index</th>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Mean Grade</th>
+                    ${subjectHeaderCells}
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+    const win = window.open("", "_blank");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    win.print();
+  };
+
+  const init = () => {
+    const stored = loadStoredResults();
+    state.data = stored.data;
+    state.savedAt = stored.savedAt;
+    if (!state.data || !state.data.results || !state.data.results.length) {
+      emptyState.hidden = false;
+      layout.hidden = true;
+      downloadBtn.disabled = true;
+      pdfBtn.disabled = true;
+      clearBtn.disabled = true;
+      return;
+    }
+    emptyState.hidden = true;
+    layout.hidden = false;
+    downloadBtn.disabled = false;
+    pdfBtn.disabled = false;
+    clearBtn.disabled = false;
+    updateMeta();
+    refresh();
+  };
+
+  searchInput.addEventListener("input", refresh);
+  statusFilter.addEventListener("change", refresh);
+  downloadBtn.addEventListener("click", downloadCsv);
+  pdfBtn.addEventListener("click", downloadPdf);
+  clearBtn.addEventListener("click", clearResults);
+  modalClose.addEventListener("click", closeModal);
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closeModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeModal();
+  });
+
+  init();
+</script>
+
+<style>
+  .kcse-batch-page {
+    --kcse-accent: #0f766e;
+    --kcse-accent-2: #f4b400;
+    --kcse-ink: #0f172a;
+    --kcse-muted: #475569;
+    --kcse-panel: #ffffff;
+    --kcse-border: rgba(15, 23, 42, 0.12);
+
+    padding: clamp(1.5rem, 2.5vw, 2.5rem);
+    border-radius: 28px;
+    border: 1px solid var(--sl-color-gray-5);
+    background:
+      radial-gradient(50rem 30rem at -10% -20%, rgba(244, 180, 0, 0.2), transparent 60%),
+      radial-gradient(45rem 30rem at 110% 10%, rgba(15, 118, 110, 0.15), transparent 60%),
+      var(--sl-color-bg);
+    display: grid;
+    gap: 1.5rem;
+  }
+
+  .kcse-batch-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    justify-content: space-between;
+  }
+
+  .kcse-batch-header h1 {
+    margin: 0.35rem 0 0.75rem;
+    font-size: clamp(1.8rem, 3vw, 2.4rem);
+  }
+
+  .kcse-eyebrow {
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    color: var(--kcse-muted);
+  }
+
+  .kcse-header-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+  }
+
+  .kcse-link {
+    color: var(--kcse-accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .kcse-link:hover {
+    text-decoration: underline;
+  }
+
+  .kcse-button {
+    padding: 0.7rem 1.1rem;
+    border-radius: 999px;
+    border: none;
+    background: linear-gradient(120deg, #f4b400, #f97316);
+    color: #1b1401;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 10px 20px rgba(249, 115, 22, 0.2);
+  }
+
+  .kcse-button-ghost {
+    background: transparent;
+    color: var(--kcse-accent);
+    border: 1px solid var(--kcse-border);
+    box-shadow: none;
+  }
+
+  .kcse-button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .kcse-batch-meta {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .kcse-meta-card {
+    padding: 0.5rem 0.9rem;
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.12);
+    color: var(--kcse-accent);
+    font-weight: 600;
+  }
+
+  .kcse-batch-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    background: var(--kcse-panel);
+    border: 1px solid var(--kcse-border);
+    border-radius: 16px;
+    padding: 1rem;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  }
+
+  .kcse-field {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .kcse-field input,
+  .kcse-field select {
+    padding: 0.7rem 0.75rem;
+    border-radius: 12px;
+    border: 1px solid var(--kcse-border);
+    background: #ffffff;
+    color: inherit;
+    font-size: 0.95rem;
+  }
+
+  .kcse-batch-layout {
+    display: grid;
+    gap: 1.5rem;
+  }
+
+  .kcse-batch-table {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .kcse-summary {
+    display: grid;
+    gap: 0.5rem;
+    font-weight: 600;
+  }
+
+  .kcse-summary-text {
+    font-size: 0.95rem;
+  }
+
+  .kcse-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .kcse-chip {
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.12);
+    color: var(--kcse-accent);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .kcse-chip-ok {
+    background: rgba(34, 197, 94, 0.16);
+    color: #166534;
+  }
+
+  .kcse-chip-warn {
+    background: rgba(234, 179, 8, 0.18);
+    color: #92400e;
+  }
+
+  .kcse-chip-error {
+    background: rgba(239, 68, 68, 0.16);
+    color: #991b1b;
+  }
+
+  .kcse-table-wrap {
+    background: var(--kcse-panel);
+    border-radius: 16px;
+    border: 1px solid var(--kcse-border);
+    overflow: hidden;
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.08);
+  }
+
+  .kcse-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .kcse-table th,
+  .kcse-table td {
+    padding: 0.6rem 0.75rem;
+    border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+    text-align: left;
+    font-size: 0.9rem;
+  }
+
+  .kcse-table th {
+    background: rgba(15, 23, 42, 0.04);
+    font-weight: 600;
+  }
+
+  .kcse-table tbody tr {
+    cursor: pointer;
+  }
+
+  .kcse-table tbody tr:hover {
+    background: rgba(15, 118, 110, 0.08);
+  }
+
+  .kcse-table tbody tr.is-active {
+    background: rgba(15, 118, 110, 0.16);
+  }
+
+  .kcse-placeholder {
+    padding: 0.85rem;
+    border-radius: 12px;
+    background: rgba(148, 163, 184, 0.16);
+    color: var(--kcse-muted);
+  }
+
+  .kcse-detail-title {
+    font-weight: 700;
+    font-size: 1.05rem;
+  }
+
+  .kcse-mean {
+    font-weight: 600;
+  }
+
+  .kcse-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 0.7rem;
+    text-transform: uppercase;
+  }
+
+  .kcse-pill-ok {
+    background: rgba(34, 197, 94, 0.2);
+    color: #166534;
+  }
+
+  .kcse-pill-not_found {
+    background: rgba(234, 179, 8, 0.2);
+    color: #92400e;
+  }
+
+  .kcse-pill-error {
+    background: rgba(239, 68, 68, 0.2);
+    color: #991b1b;
+  }
+
+  .kcse-json {
+    border: 1px dashed var(--kcse-border);
+    border-radius: 12px;
+    padding: 0.75rem;
+  }
+
+  .kcse-json summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .kcse-json pre {
+    margin-top: 0.75rem;
+    background: rgba(15, 23, 42, 0.04);
+    padding: 0.75rem;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+  }
+
+  .kcse-empty {
+    padding: 2rem;
+    border-radius: 20px;
+    background: var(--kcse-panel);
+    border: 1px dashed var(--kcse-border);
+    text-align: center;
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .kcse-muted {
+    color: var(--kcse-muted);
+  }
+
+  .kcse-hint {
+    font-size: 0.85rem;
+    color: var(--kcse-muted);
+  }
+
+  .kcse-summary-title {
+    font-weight: 600;
+  }
+
+  .kcse-summary-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+  }
+
+  .kcse-summary-block {
+    display: grid;
+    gap: 0.4rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: 14px;
+    border: 1px solid var(--kcse-border);
+    background: rgba(15, 118, 110, 0.08);
+  }
+
+  .kcse-grade-summary {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .kcse-grade-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 0.5rem;
+  }
+
+  .kcse-grade-pill {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.35rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.12);
+    color: var(--kcse-accent);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .kcse-grade-label {
+    letter-spacing: 0.02em;
+  }
+
+  .kcse-table-compact th,
+  .kcse-table-compact td {
+    padding: 0.4rem 0.55rem;
+  }
+
+  .kcse-subjects {
+    font-size: 0.82rem;
+    color: var(--kcse-muted);
+    line-height: 1.3;
+    white-space: normal;
+  }
+
+  .kcse-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    display: grid;
+    place-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    padding: 1.5rem;
+    z-index: 50;
+  }
+
+  .kcse-modal.is-open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .kcse-modal-card {
+    background: var(--kcse-panel);
+    border-radius: 18px;
+    border: 1px solid var(--kcse-border);
+    padding: 1.25rem;
+    width: min(720px, 100%);
+    max-height: 80vh;
+    overflow: auto;
+    box-shadow: 0 20px 40px rgba(15, 23, 42, 0.2);
+    display: grid;
+    gap: 1rem;
+  }
+
+  .kcse-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .kcse-modal-close {
+    border: none;
+    background: transparent;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: var(--kcse-muted);
+  }
+
+  :global(body.kcse-modal-open) {
+    overflow: hidden;
+  }
+
+  @media (max-width: 900px) {
+    .kcse-batch-layout {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 600px) {
+    .kcse-batch-page {
+      padding: 1.25rem;
+    }
+
+    .kcse-batch-controls {
+      padding: 0.85rem;
+    }
+  }
+</style>
