@@ -1,4 +1,9 @@
 <section class="kcse-shell">
+  <div class="kcse-banner">
+    Privacy notice: This tool does not store or retain KNEC data server-side.
+    Batch results are stored only in your browser and can be cleared.
+    Use only with proper authorization.
+  </div>
   <header class="kcse-hero">
     <div class="kcse-hero-text">
       <p class="kcse-eyebrow">KCSE Results Capture</p>
@@ -35,6 +40,12 @@
         <div class="kcse-note">
           <span class="kcse-note-title">Batch Ready</span>
           <span class="kcse-muted">Requires <code>python-multipart</code> and <code>pdftotext</code>.</span>
+        </div>
+        <div class="kcse-note">
+          <span class="kcse-note-title">Privacy</span>
+          <span class="kcse-muted">
+            No server-side storage. Batch data stays in your browser and can be cleared.
+          </span>
         </div>
       </div>
       <div class="kcse-hero-actions">
@@ -105,6 +116,11 @@
     </article>
 
   </div>
+  <footer class="kcse-footer">
+    <strong>Privacy:</strong> Data is fetched on demand and discarded. We do not
+    retain or share candidate results. You are responsible for consent and
+    authorized access.
+  </footer>
 </section>
 
 <script type="module">
@@ -425,6 +441,16 @@
     border: 1px solid var(--sl-color-gray-5);
   }
 
+  .kcse-banner {
+    padding: 0.85rem 1rem;
+    border-radius: 14px;
+    background: rgba(244, 180, 0, 0.18);
+    border: 1px solid rgba(244, 180, 0, 0.35);
+    color: var(--kcse-ink);
+    font-weight: 600;
+    font-size: 0.95rem;
+  }
+
   .kcse-hero {
     display: grid;
     grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
@@ -463,6 +489,16 @@
     display: flex;
     justify-content: flex-start;
     margin-top: 0.25rem;
+  }
+
+  .kcse-footer {
+    margin-top: 1rem;
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    border: 1px dashed var(--kcse-border);
+    background: rgba(15, 118, 110, 0.06);
+    color: var(--kcse-muted);
+    font-size: 0.9rem;
   }
 
   .kcse-note {

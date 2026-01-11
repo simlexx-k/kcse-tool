@@ -23,6 +23,10 @@
   </header>
 
   <section id="batch-meta" class="kcse-batch-meta"></section>
+  <div class="kcse-privacy-note">
+    No server-side storage. Results live only in your browser; use "Clear Saved"
+    to remove data.
+  </div>
 
   <section class="kcse-batch-controls">
     <div class="kcse-field">
@@ -80,6 +84,11 @@
       <div id="kcse-modal-body" class="kcse-modal-body"></div>
     </div>
   </div>
+
+  <footer class="kcse-footer">
+    <strong>Privacy:</strong> Data is fetched on demand and discarded by the
+    backend. You are responsible for consent and authorized access.
+  </footer>
 </section>
 
 <script type="module">
@@ -721,6 +730,24 @@
     display: flex;
     gap: 0.75rem;
     flex-wrap: wrap;
+  }
+
+  .kcse-privacy-note {
+    font-size: 0.9rem;
+    color: var(--kcse-muted);
+    background: rgba(15, 118, 110, 0.08);
+    border: 1px solid var(--kcse-border);
+    padding: 0.6rem 0.9rem;
+    border-radius: 12px;
+  }
+
+  .kcse-footer {
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    border: 1px dashed var(--kcse-border);
+    background: rgba(15, 118, 110, 0.06);
+    color: var(--kcse-muted);
+    font-size: 0.9rem;
   }
 
   .kcse-meta-card {
